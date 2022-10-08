@@ -23,6 +23,7 @@ struct Event<'a> {
     /// Event kind
     kind: Kind<'a>,
 }
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind<'a> {

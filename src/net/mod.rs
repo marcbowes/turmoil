@@ -3,17 +3,16 @@
 //! They mirror [tokio::net](https://docs.rs/tokio/latest/tokio/net/) to provide
 //! a high fidelity implementation.
 
-use crate::{envelope::DeliveryInstructions, version::Dot, Message};
-
-use tokio::sync::oneshot;
-
-mod listener;
+use crate::{version::Dot, Message};
 
 use bytes::Bytes;
-pub use listener::TcpListener;
+use tokio::sync::oneshot;
 
-mod stream;
-pub use stream::TcpStream;
+// mod listener;
+// pub use listener::TcpListener;
+
+// mod stream;
+// pub use stream::TcpStream;
 
 mod udp;
 pub use udp::{recv, recv_from, send};
@@ -55,10 +54,15 @@ impl Message for Syn {
     }
 }
 
-/// Envelope for messages on an established connection.
+/// Envelope for messages on an established connection. This is a parody of the
+/// encapsulation TCP does. We don't implement all of TCP (padding, checksums,
+/// sequencing), nor are we faithful for the bits we do implement. The point is
+/// to simulate real world interactions, and so we offer just enough control
+/// over delivery, without getting too complicated.
+#[derive(Debug)]
 pub(crate) struct StreamEnvelope {
-    /// When (or if) to deliver the message
-    pub(crate) instructions: DeliveryInstructions,
+    /// In real TCP, this is a src and dst port.
+    pub(crate) pair: SocketPair,
 
     /// Segment type
     pub(crate) segment: Segment,
@@ -70,10 +74,9 @@ pub(crate) enum Segment {
     Data(Bytes),
 }
 
-impl Message for Segment {
+impl Message for StreamEnvelope {
     fn write_json(&self, dst: &mut dyn std::io::Write) {
-        match self {
-            Segment::Data(_) => write!(dst, "Data").unwrap(),
-        }
+        // TODO: How do we want this formatted?
+        write!(dst, "Data").unwrap()
     }
 }

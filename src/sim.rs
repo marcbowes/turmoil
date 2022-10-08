@@ -4,6 +4,7 @@ use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::ops::DerefMut;
 use std::rc::Rc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
@@ -198,9 +199,23 @@ impl<'a> Sim<'a> {
             let mut is_finished = true;
             let mut finished = vec![];
 
+            // Tick the networking, processing messages. This is done before
+            // ticking any other runtime, as they might be waiting on network
+            // IO. (It also might be waiting on something else, such as time.)
+            self.world.borrow_mut().topology.tick_by(tick);
+
             for (&addr, rt) in self.rts.iter() {
-                // Set the current host (see method docs)
-                self.world.borrow_mut().current = Some(addr);
+                {
+                    let mut world = self.world.borrow_mut();
+                    // We need to move deliverable messages off the network and
+                    // into the dst host. This requires two mutable borrows.
+                    let World {
+                        topology, hosts, ..
+                    } = world.deref_mut();
+                    topology.deliver_messages(hosts.get_mut(&addr).expect("missing host"));
+                    // Set the current host (see method docs)
+                    world.current = Some(addr);
+                }
 
                 let now = World::enter(&self.world, || rt.tick(tick));
 

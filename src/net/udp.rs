@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 pub fn send<M: Message>(dst: impl ToSocketAddr, message: M) {
     World::current(|world| {
         let dst = world.lookup(dst);
-        world.embark(dst, Box::new(message));
+        world.send_message(dst, Box::new(message));
     });
 }
 

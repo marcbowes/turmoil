@@ -1,4 +1,4 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr, rc::Rc};
 
 use tokio::sync::Notify;
 
@@ -10,7 +10,7 @@ use super::TcpStream;
 ///
 /// All methods must be called from a host within a Turmoil simulation.
 pub struct TcpListener {
-    notify: Arc<Notify>,
+    notify: Rc<Notify>,
 }
 
 impl TcpListener {

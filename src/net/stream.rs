@@ -2,7 +2,7 @@ use bytes::Bytes;
 use std::{
     io,
     pin::Pin,
-    sync::Arc,
+    rc::Rc,
     task::{ready, Context, Poll},
 };
 use tokio_util::sync::ReusableBoxFuture;
@@ -14,19 +14,19 @@ use tokio::{
 
 use crate::{world::World, ToSocketAddr};
 
-use super::{Segment, SocketPair};
+use super::{Segment, SocketPair, StreamEnvelope};
 
 /// A simulated connection between two hosts.
 ///
 /// All methods must be called from a host within a Turmoil simulation.
 pub struct TcpStream {
     pub(crate) pair: SocketPair,
-    notify: Arc<Notify>,
+    notify: Rc<Notify>,
     read_fut: Option<ReusableBoxFuture<'static, ()>>,
 }
 
 impl TcpStream {
-    pub(crate) fn new(pair: SocketPair, notify: Arc<Notify>) -> Self {
+    pub(crate) fn new(pair: SocketPair, notify: Rc<Notify>) -> Self {
         Self {
             pair,
             notify,
@@ -68,7 +68,7 @@ impl TcpStream {
                     return Poll::Ready(res);
                 }
 
-                let notify = Arc::clone(&self.notify);
+                let notify = Rc::clone(&self.notify);
                 self.read_fut
                     .get_or_insert(ReusableBoxFuture::new(
                         async move { notify.notified().await },
@@ -78,12 +78,11 @@ impl TcpStream {
 
         let _ = ready!(read_fut.poll(cx));
 
-        // Loop until we recv a segment from the host or the read future
-        // is pending. This is necessary as we might be notified, but
-        // the segment is still "on the network" and we need to continue
-        // polling.
+        // Loop until we recv a segment from the host or the read future is
+        // pending. This is necessary as we might be notified, but the segment
+        // is still "on the network" and we need to continue polling.
         loop {
-            let notify = Arc::clone(&self.notify);
+            let notify = Rc::clone(&self.notify);
             read_fut.set(async move { notify.notified().await });
 
             match Self::recv(self.pair, buf) {
@@ -108,7 +107,11 @@ impl TcpStream {
     fn poll_write_priv(&self, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         World::current(|world| {
             let bytes = Bytes::copy_from_slice(buf);
-            world.embark_on(self.pair, Segment::Data(bytes))
+            let encap = StreamEnvelope {
+                pair: self.pair,
+                segment: Segment::Data(bytes),
+            };
+            world.send_message(self.pair.peer.host, Box::new(encap))
         });
 
         Poll::Ready(Ok(buf.len()))

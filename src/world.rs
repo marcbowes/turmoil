@@ -1,5 +1,4 @@
-use crate::net::{Segment, SocketPair, Syn, TcpStream};
-use crate::top::Embark;
+//use crate::net::{Segment, SocketPair, Syn, TcpStream};
 use crate::{config, message, version, Dns, Envelope, Host, Log, Message, ToSocketAddr, Topology};
 
 use indexmap::IndexMap;
@@ -14,7 +13,7 @@ use tokio::time::Instant;
 /// Tracks all the state for the simulated world.
 pub(crate) struct World {
     /// Tracks all individual hosts
-    hosts: IndexMap<SocketAddr, Host>,
+    pub(crate) hosts: IndexMap<SocketAddr, Host>,
 
     /// Tracks how each host is connected to each other.
     pub(crate) topology: Topology,
@@ -76,15 +75,14 @@ impl World {
         self.hosts.get(&addr).expect("host missing")
     }
 
-    /// Return a mutable reference to the currently executing host.
-    pub(crate) fn current_host_mut(&mut self) -> &mut Host {
-        let addr = self.current.expect("current host missing");
-        self.hosts.get_mut(&addr).expect("host missing")
-    }
-
     /// Return a reference to the host at `addr`.
     pub(crate) fn host(&self, addr: SocketAddr) -> &Host {
         self.hosts.get(&addr).expect("host missing")
+    }
+
+    /// Return a mutable reference to the host at `addr`.
+    pub(crate) fn host_mut(&mut self, addr: SocketAddr) -> &mut Host {
+        self.hosts.get_mut(&addr).expect("host missing")
     }
 
     pub(crate) fn lookup(&mut self, host: impl ToSocketAddr) -> SocketAddr {
@@ -95,12 +93,8 @@ impl World {
         self.topology.hold(a, b);
     }
 
-    // TODO: Should all held packets be immediately released, or should they be
-    // subject to delay and potentially broken links when the hold is removed?
     pub(crate) fn release(&mut self, a: SocketAddr, b: SocketAddr) {
         self.topology.release(a, b);
-        let dst = &mut self.hosts[&b];
-        dst.release(a);
     }
 
     pub(crate) fn partition(&mut self, a: SocketAddr, b: SocketAddr) {
@@ -127,130 +121,79 @@ impl World {
         self.hosts.insert(addr, Host::new(addr, epoch, notify));
     }
 
-    /// Initiate a new connection with `dst` from the currently executing host.
-    pub(crate) fn connect(
-        &mut self,
-        dst: SocketAddr,
-    ) -> (version::Dot, oneshot::Receiver<version::Dot>) {
-        let (sender, receiver) = oneshot::channel();
-        let syn = Syn { notify: sender };
+    // /// Initiate a new connection with `dst` from the currently executing host.
+    // pub(crate) fn connect(
+    //     &mut self,
+    //     dst: SocketAddr,
+    // ) -> (version::Dot, oneshot::Receiver<version::Dot>) {
+    //     let (sender, receiver) = oneshot::channel();
+    //     let syn = Syn { notify: sender };
 
-        let dot = self.current_host_mut().bump();
-        let elapsed = self.current_host().elapsed();
+    //     let dot = self.current_host_mut().bump();
+    //     let elapsed = self.current_host().elapsed();
 
-        match self.topology.embark_one(&mut self.rng, dot.host, dst) {
-            it @ Embark::Delay(_) | it @ Embark::Hold => {
-                let delay = if let Embark::Delay(d) = it {
-                    Some(d)
-                } else {
-                    None
-                };
+    //     match self.topology.send_message(&mut self.rng, dot.host, dst) {
+    //         it @ Embark::Delay(_) | it @ Embark::Hold => {
+    //             let delay = if let Embark::Delay(d) = it {
+    //                 Some(d)
+    //             } else {
+    //                 None
+    //             };
 
-                self.log.syn(&self.dns, dot, elapsed, dst, delay, false);
+    //             self.log.syn(&self.dns, dot, elapsed, dst, delay, false);
 
-                self.hosts[&dst].syn(dot, delay, syn);
-                (dot, receiver)
-            }
-            Embark::Drop => {
-                self.log.syn(&self.dns, dot, elapsed, dst, None, true);
+    //             self.hosts[&dst].syn(dot, delay, syn);
+    //             (dot, receiver)
+    //         }
+    //         Embark::Drop => {
+    //             self.log.syn(&self.dns, dot, elapsed, dst, None, true);
 
-                // Let sender drop naturally to err on the receive side
-                (dot, receiver)
-            }
-        }
-    }
+    //             // Let sender drop naturally to err on the receive side
+    //             (dot, receiver)
+    //         }
+    //     }
+    // }
 
-    /// Accept a new incoming connection on the currently executing host.
-    pub(crate) fn accept(&mut self) -> Option<(TcpStream, SocketAddr)> {
-        let ret = self.current_host_mut().accept();
+    // /// Accept a new incoming connection on the currently executing host.
+    // pub(crate) fn accept(&mut self) -> Option<(TcpStream, SocketAddr)> {
+    //     let ret = self.current_host_mut().accept();
 
-        if let Some(Envelope { src, message, .. }) = ret {
-            let host = self.current_host();
+    //     if let Some(Envelope { src, message, .. }) = ret {
+    //         let host = self.current_host();
 
-            let syn = message::downcast::<Syn>(message);
-            let local = host.dot();
-            let elapsed = host.elapsed();
+    //         let syn = message::downcast::<Syn>(message);
+    //         let local = host.dot();
+    //         let elapsed = host.elapsed();
 
-            // Notify the peer, returning early if they have hung up to avoid
-            // host mutations.
-            syn.notify.send(local).ok()?;
+    //         // Notify the peer, returning early if they have hung up to avoid
+    //         // host mutations.
+    //         syn.notify.send(local).ok()?;
 
-            let pair = SocketPair { local, peer: src };
-            let host_mut = self.current_host_mut();
-            host_mut.setup(pair);
-            let notify = host_mut.subscribe(pair);
+    //         let pair = SocketPair { local, peer: src };
+    //         let host_mut = self.current_host_mut();
+    //         host_mut.setup(pair);
+    //         let notify = host_mut.subscribe(pair);
 
-            self.log.syn_ack(&self.dns, local, elapsed, src);
+    //         self.log.syn_ack(&self.dns, local, elapsed, src);
 
-            // Setup the connection on the peer. This has to happen on the
-            // accept side because as soon as this returns the currently
-            // executing host may use the stream, even though initiating host
-            // hasn't seen the ack yet.
-            self.hosts[&src.host].setup(pair.flip());
+    //         // Setup the connection on the peer. This has to happen on the
+    //         // accept side because as soon as this returns the currently
+    //         // executing host may use the stream, even though initiating host
+    //         // hasn't seen the ack yet.
+    //         self.hosts[&src.host].setup(pair.flip());
 
-            return Some((TcpStream::new(pair, notify), src.host));
-        }
+    //         return Some((TcpStream::new(pair, notify), src.host));
+    //     }
 
-        None
-    }
+    //     None
+    // }
 
-    /// Embark a message from the currently executing host to `dst`.
-    ///
-    /// This begins the message's journey, queuing it on the destination inbox,
-    /// but it may still be "on the network" depending on the current toplogy.
-    pub(crate) fn embark(&mut self, dst: SocketAddr, message: Box<dyn Message>) {
-        let host = self.current_host_mut();
-        let elapsed = host.elapsed();
-
-        // Log takes a message ref, so we bump here to emit the correct value
-        // before embarking.
-        let dot = host.bump();
-
-        match self.topology.embark_one(&mut self.rng, dot.host, dst) {
-            it @ Embark::Delay(_) | it @ Embark::Hold => {
-                let delay = if let Embark::Delay(d) = it {
-                    Some(d)
-                } else {
-                    None
-                };
-
-                self.log
-                    .send(&self.dns, dot, elapsed, dst, delay, false, &*message);
-
-                self.hosts[&dst].embark(dot, delay, message);
-            }
-            Embark::Drop => {
-                self.log
-                    .send(&self.dns, dot, elapsed, dst, None, true, &*message);
-            }
-        }
-    }
-
-    /// Embark a segment from the currently executing host to `pair`'s peer.
-    pub(crate) fn embark_on(&mut self, pair: SocketPair, segment: Segment) {
-        let host = self.current_host_mut();
-        let dst = pair.peer.host;
-        let elapsed = host.elapsed();
-
-        // Log takes a message ref, so we bump here to emit the correct value
-        // before embarking.
-        let dot = host.bump();
-
-        match self.topology.embark_one(&mut self.rng, dot.host, dst) {
-            it @ Embark::Delay(_) | it @ Embark::Hold => {
-                let delay = if let Embark::Delay(d) = it {
-                    Some(d)
-                } else {
-                    None
-                };
-
-                self.log
-                    .send(&self.dns, dot, elapsed, dst, delay, false, &segment);
-
-                self.hosts[&pair.peer.host].embark_on(pair.flip(), delay, segment);
-            }
-            _ => unimplemented!("Drop is not supported yet"),
-        }
+    /// Send `message` to `dst` from the current host. Delivery is asynchronous
+    /// and not guaranteed.
+    pub(crate) fn send_message(&mut self, dst: SocketAddr, message: Box<dyn Message>) {
+        let src = self.current_host().addr;
+        self.topology
+            .enqueue_message(&mut self.rng, src, dst, message);
     }
 
     /// Receive a message on the currently executing host.
@@ -281,18 +224,18 @@ impl World {
         ret
     }
 
-    /// Receive a segment from `pair's peer on the currently executing host.
-    pub(crate) fn recv_on(&mut self, pair: SocketPair) -> Option<Segment> {
-        let host = &mut self.hosts[&pair.local.host];
-        let ret = host.recv_on(pair);
+    // /// Receive a segment from `pair`'s peer on the currently executing host.
+    // pub(crate) fn recv_on(&mut self, pair: SocketPair) -> Option<Segment> {
+    //     let host = &mut self.hosts[&pair.local.host];
+    //     let ret = host.recv_on(pair);
 
-        if let Some(seg) = &ret {
-            self.log
-                .recv(&self.dns, host.dot(), host.elapsed(), pair.peer, seg);
-        }
+    //     if let Some(seg) = &ret {
+    //         self.log
+    //             .recv(&self.dns, host.dot(), host.elapsed(), pair.peer, seg);
+    //     }
 
-        ret
-    }
+    //     ret
+    // }
 
     /// Tick the host at `addr` to `now`.
     pub(crate) fn tick(&mut self, addr: SocketAddr, now: Instant) {
