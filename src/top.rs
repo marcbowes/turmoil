@@ -28,8 +28,8 @@ pub(crate) struct Topology {
 /// This type is used as the key in the [`Topology::links`] map. See [`new`]
 /// which orders the addrs, such that this type uniquely identifies the link
 /// between two hosts on the network.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-struct Pair(SocketAddr, SocketAddr);
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub(crate) struct Pair(pub(crate) SocketAddr, pub(crate) SocketAddr);
 
 impl Pair {
     fn new(a: SocketAddr, b: SocketAddr) -> Pair {
