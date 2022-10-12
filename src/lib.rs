@@ -60,8 +60,8 @@ pub fn lookup(addr: impl ToSocketAddr) -> SocketAddr {
 /// Must be called from within a Turmoil simulation.
 pub fn hold(a: impl ToSocketAddr, b: impl ToSocketAddr) {
     World::current(|world| {
-        let a = world.lookup(a);
-        let b = world.lookup(b);
+        let a = world.lookup(a).ip();
+        let b = world.lookup(b).ip();
 
         world.hold(a, b);
     })
@@ -72,8 +72,8 @@ pub fn hold(a: impl ToSocketAddr, b: impl ToSocketAddr) {
 /// Must be called from within a Turmoil simulation.
 pub fn release(a: impl ToSocketAddr, b: impl ToSocketAddr) {
     World::current(|world| {
-        let a = world.lookup(a);
-        let b = world.lookup(b);
+        let a = world.lookup(a).ip();
+        let b = world.lookup(b).ip();
 
         world.release(a, b);
     })
@@ -85,8 +85,8 @@ pub fn release(a: impl ToSocketAddr, b: impl ToSocketAddr) {
 /// Must be called from within a Turmoil simulation.
 pub fn partition(a: impl ToSocketAddr, b: impl ToSocketAddr) {
     World::current(|world| {
-        let a = world.lookup(a);
-        let b = world.lookup(b);
+        let a = world.lookup(a).ip();
+        let b = world.lookup(b).ip();
 
         world.partition(a, b);
     })
@@ -98,8 +98,8 @@ pub fn partition(a: impl ToSocketAddr, b: impl ToSocketAddr) {
 /// Must be called from within a Turmoil simulation.
 pub fn repair(a: impl ToSocketAddr, b: impl ToSocketAddr) {
     World::current(|world| {
-        let a = world.lookup(a);
-        let b = world.lookup(b);
+        let a = world.lookup(a).ip();
+        let b = world.lookup(b).ip();
 
         world.repair(a, b);
     })

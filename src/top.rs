@@ -1,14 +1,13 @@
 use crate::envelope::Envelope;
 use crate::host::Host;
 use crate::rt::Rt;
-use crate::world::World;
 use crate::{config, Message};
 
 use indexmap::IndexMap;
 use rand::{Rng, RngCore};
 use rand_distr::{Distribution, Exp};
 use std::collections::VecDeque;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -26,19 +25,19 @@ pub(crate) struct Topology {
 }
 
 /// This type is used as the key in the [`Topology::links`] map. See [`new`]
-/// which orders the addrs, such that this type uniquely identifies the link
+/// which orders the IPs, such that this type uniquely identifies the link
 /// between two hosts on the network.
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-pub(crate) struct Pair(pub(crate) SocketAddr, pub(crate) SocketAddr);
+pub(crate) struct Pair(pub(crate) IpAddr, pub(crate) IpAddr);
 
 impl Pair {
-    fn new(a: SocketAddr, b: SocketAddr) -> Pair {
+    fn new(a: IpAddr, b: IpAddr) -> Self {
         assert_ne!(a, b);
 
         if a < b {
-            Pair(a, b)
+            Self(a, b)
         } else {
-            Pair(b, a)
+            Self(b, a)
         }
     }
 }
@@ -55,7 +54,7 @@ struct Link {
     inflight: VecDeque<Inflight>,
 
     /// Messages that are ready to be delivered.
-    deliverable: IndexMap<SocketAddr, VecDeque<Envelope>>,
+    deliverable: IndexMap<IpAddr, VecDeque<Envelope>>,
 
     /// The current network time, moved forward with [`Link::tick`].
     now: Instant,
@@ -85,7 +84,7 @@ impl Topology {
     }
 
     /// Register a link between two hosts
-    pub(crate) fn register(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn register(&mut self, a: IpAddr, b: IpAddr) {
         let pair = Pair::new(a, b);
         assert!(self
             .links
@@ -97,12 +96,7 @@ impl Topology {
         self.config.latency_mut().max_message_latency = value;
     }
 
-    pub(crate) fn set_link_max_message_latency(
-        &mut self,
-        a: SocketAddr,
-        b: SocketAddr,
-        value: Duration,
-    ) {
+    pub(crate) fn set_link_max_message_latency(&mut self, a: IpAddr, b: IpAddr, value: Duration) {
         self.links[&Pair::new(a, b)]
             .latency(self.config.latency())
             .max_message_latency = value;
@@ -116,7 +110,7 @@ impl Topology {
         self.config.message_loss_mut().fail_rate = value;
     }
 
-    pub(crate) fn set_link_fail_rate(&mut self, a: SocketAddr, b: SocketAddr, value: f64) {
+    pub(crate) fn set_link_fail_rate(&mut self, a: IpAddr, b: IpAddr, value: f64) {
         self.links[&Pair::new(a, b)]
             .message_loss(&self.config.message_loss())
             .fail_rate = value;
@@ -132,32 +126,32 @@ impl Topology {
         dst: SocketAddr,
         message: Box<dyn Message>,
     ) {
-        let link = &mut self.links[&Pair::new(src, dst)];
+        let link = &mut self.links[&Pair::new(src.ip(), dst.ip())];
         link.enqueue_message(&self.config, rand, src, dst, message);
     }
 
     // Move messages from any network links to the `dst` host.
     pub(crate) fn deliver_messages(&mut self, dst: &mut Host) {
         for (pair, link) in &mut self.links {
-            if pair.0 == dst.addr || pair.1 == dst.addr {
+            if pair.0 == dst.addr.ip() || pair.1 == dst.addr.ip() {
                 link.deliver_messages(dst);
             }
         }
     }
 
-    pub(crate) fn hold(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn hold(&mut self, a: IpAddr, b: IpAddr) {
         self.links[&Pair::new(a, b)].hold();
     }
 
-    pub(crate) fn release(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn release(&mut self, a: IpAddr, b: IpAddr) {
         self.links[&Pair::new(a, b)].release();
     }
 
-    pub(crate) fn partition(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn partition(&mut self, a: IpAddr, b: IpAddr) {
         self.links[&Pair::new(a, b)].explicit_partition();
     }
 
-    pub(crate) fn repair(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn repair(&mut self, a: IpAddr, b: IpAddr) {
         self.links[&Pair::new(a, b)].explicit_repair();
     }
 
@@ -227,7 +221,6 @@ impl Link {
         let status = match self.state {
             State::Healthy => {
                 let delay = self.delay(global_config.latency(), rand);
-                println!("delay is {}", delay.as_millis());
                 DeliveryStatus::DeliverAfter(self.now + delay)
             }
             State::Hold => DeliveryStatus::Hold,
@@ -268,7 +261,7 @@ impl Link {
                         message: inflight.args.message,
                     };
                     self.deliverable
-                        .entry(inflight.args.dst)
+                        .entry(inflight.args.dst.ip())
                         .or_default()
                         .push_back(envelope);
                     sent += 1;
@@ -278,7 +271,7 @@ impl Link {
     }
 
     fn deliver_messages(&mut self, dst: &mut Host) {
-        for message in self.deliverable.entry(dst.addr).or_default().drain(..) {
+        for message in self.deliverable.entry(dst.addr.ip()).or_default().drain(..) {
             dst.receive_from_network(message)
         }
     }

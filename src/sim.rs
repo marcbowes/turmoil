@@ -123,8 +123,8 @@ impl<'a> Sim<'a> {
     // Introduce a full network partition between two hosts
     pub fn partition(&self, a: impl ToSocketAddr, b: impl ToSocketAddr) {
         let mut world = self.world.borrow_mut();
-        let a = world.lookup(a);
-        let b = world.lookup(b);
+        let a = world.lookup(a).ip();
+        let b = world.lookup(b).ip();
 
         world.partition(a, b);
     }
@@ -132,8 +132,8 @@ impl<'a> Sim<'a> {
     // Repair a partition between two hosts
     pub fn repair(&self, a: impl ToSocketAddr, b: impl ToSocketAddr) {
         let mut world = self.world.borrow_mut();
-        let a = world.lookup(a);
-        let b = world.lookup(b);
+        let a = world.lookup(a).ip();
+        let b = world.lookup(b).ip();
 
         world.repair(a, b);
     }
@@ -153,8 +153,8 @@ impl<'a> Sim<'a> {
         value: Duration,
     ) {
         let mut world = self.world.borrow_mut();
-        let a = world.lookup(a);
-        let b = world.lookup(b);
+        let a = world.lookup(a).ip();
+        let b = world.lookup(b).ip();
 
         world.topology.set_link_max_message_latency(a, b, value);
     }
@@ -176,8 +176,8 @@ impl<'a> Sim<'a> {
 
     pub fn set_link_fail_rate(&mut self, a: impl ToSocketAddr, b: impl ToSocketAddr, value: f64) {
         let mut world = self.world.borrow_mut();
-        let a = world.lookup(a);
-        let b = world.lookup(b);
+        let a = world.lookup(a).ip();
+        let b = world.lookup(b).ip();
 
         world.topology.set_link_fail_rate(a, b, value);
     }

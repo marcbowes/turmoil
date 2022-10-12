@@ -1,3 +1,4 @@
+use crate::net::{Segment, SocketPair, Syn};
 use crate::{
     config, message, net::TcpStream, version, Dns, Envelope, Host, Log, Message, ToSocketAddr,
     Topology,
@@ -7,7 +8,7 @@ use indexmap::IndexMap;
 use rand::RngCore;
 use scoped_tls::scoped_thread_local;
 use std::cell::RefCell;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use tokio::sync::{oneshot, Notify};
 use tokio::time::Instant;
@@ -91,19 +92,19 @@ impl World {
         self.dns.lookup(host)
     }
 
-    pub(crate) fn hold(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn hold(&mut self, a: IpAddr, b: IpAddr) {
         self.topology.hold(a, b);
     }
 
-    pub(crate) fn release(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn release(&mut self, a: IpAddr, b: IpAddr) {
         self.topology.release(a, b);
     }
 
-    pub(crate) fn partition(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn partition(&mut self, a: IpAddr, b: IpAddr) {
         self.topology.partition(a, b);
     }
 
-    pub(crate) fn repair(&mut self, a: SocketAddr, b: SocketAddr) {
+    pub(crate) fn repair(&mut self, a: IpAddr, b: IpAddr) {
         self.topology.repair(a, b);
     }
 
@@ -116,45 +117,34 @@ impl World {
 
         // Register links between the new host and all existing hosts
         for existing in self.hosts.keys() {
-            self.topology.register(*existing, addr);
+            self.topology.register(existing.ip(), addr.ip());
         }
 
         // Initialize host state
         self.hosts.insert(addr, Host::new(addr, epoch, notify));
     }
 
-    // /// Initiate a new connection with `dst` from the currently executing host.
-    // pub(crate) fn connect(
-    //     &mut self,
-    //     dst: SocketAddr,
-    // ) -> (version::Dot, oneshot::Receiver<version::Dot>) {
-    //     let (sender, receiver) = oneshot::channel();
-    //     let syn = Syn { notify: sender };
+    /// Initiate a new connection with `dst` from the currently executing host.
+    pub(crate) fn connect(&mut self, dst: SocketAddr) -> (oneshot::Receiver<()>, SocketPair) {
+        let (sender, receiver) = oneshot::channel();
+        let syn = Syn {
+            dst,
+            notify: sender,
+        };
 
-    //     let dot = self.current_host_mut().bump();
-    //     let elapsed = self.current_host().elapsed();
+        let current_addr = self.current_host().addr;
+        let host = self.host_mut(current_addr);
 
-    //     match self.topology.send_message(&mut self.rng, dot.host, dst) {
-    //         it @ Embark::Delay(_) | it @ Embark::Hold => {
-    //             let delay = if let Embark::Delay(d) = it {
-    //                 Some(d)
-    //             } else {
-    //                 None
-    //             };
+        let local: SocketAddr = (current_addr.ip(), host.assign_ephemeral_port()).into();
+        let pair = SocketPair::new(local, dst);
 
-    //             self.log.syn(&self.dns, dot, elapsed, dst, delay, false);
+        host.tcp.new_stream(pair);
 
-    //             self.hosts[&dst].syn(dot, delay, syn);
-    //             (dot, receiver)
-    //         }
-    //         Embark::Drop => {
-    //             self.log.syn(&self.dns, dot, elapsed, dst, None, true);
+        self.topology
+            .enqueue_message(&mut self.rng, local, dst, Box::new(Segment::Syn(syn)));
 
-    //             // Let sender drop naturally to err on the receive side
-    //             (dot, receiver)
-    //         }
-    //     }
-    // }
+        (receiver, pair)
+    }
 
     /// Accept an incoming connection on the currently executing host.
     pub(crate) fn accept(&mut self, addr: SocketAddr) -> Option<(TcpStream, SocketAddr)> {

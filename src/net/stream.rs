@@ -9,46 +9,50 @@ use tokio_util::sync::ReusableBoxFuture;
 
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::Notify,
+    sync::{oneshot, Notify},
 };
 
 use crate::{top::Pair, world::World, ToSocketAddr};
 
-use super::Segment;
+use super::{Segment, SocketPair, Syn};
 
 /// A simulated connection between two hosts.
 ///
 /// All methods must be called from a host within a Turmoil simulation.
 pub struct TcpStream {
-    pair: Pair,
+    pair: SocketPair,
     notify: Rc<Notify>,
     // read_fut: Option<ReusableBoxFuture<'static, ()>>,
 }
 
 impl TcpStream {
-    pub(crate) fn new(pair: Pair, notify: Rc<Notify>) -> Self {
+    pub(crate) fn new(pair: SocketPair, notify: Rc<Notify>) -> Self {
         Self { pair, notify }
     }
 
-    //     /// Opens a connection to a remote host.
-    //     ///
-    //     /// `addr` is an address of the remote host. Anything which implements the
-    //     /// [`ToSocketAddr`] trait can be supplied as the address.
-    //     pub async fn connect(addr: impl ToSocketAddr) -> io::Result<Self> {
-    //         let ((local, wait), dst) = World::current(|world| {
-    //             let dst = world.lookup(addr);
-    //             (world.connect(dst), dst)
-    //         });
+    /// Opens a connection to a remote host.
+    ///
+    /// `addr` is an address of the remote host. Anything which implements the
+    /// [`ToSocketAddr`] trait can be supplied as the address.
+    pub async fn connect(addr: impl ToSocketAddr) -> io::Result<Self> {
+        let (syn_ack, pair) = World::current(|world| {
+            let dst = world.lookup(addr);
+            world.connect(dst)
+        });
 
-    //         let peer = wait
-    //             .await
-    //             .map_err(|_| io::Error::new(io::ErrorKind::ConnectionRefused, dst.to_string()))?;
+        syn_ack
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::ConnectionRefused, pair.1.to_string()))?;
 
-    //         let pair = SocketPair { local, peer };
-    //         let notify = World::current(|world| world.current_host().subscribe(pair));
+        // TODO: if err, clean up tcp connection state
 
-    //         Ok(Self::new(pair, notify))
-    //     }
+        World::current(|world| {
+            let current_addr = world.current_host().addr;
+            let notify = world.host_mut(current_addr).tcp.finish_connect(pair);
+
+            Ok(Self::new(pair, notify))
+        })
+    }
 
     //     fn poll_read_priv(
     //         &mut self,

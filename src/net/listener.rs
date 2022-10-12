@@ -10,8 +10,6 @@ use crate::{world::World, ToSocketAddr};
 
 use super::TcpStream;
 
-const ANY: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
-
 /// A simulated socket server, listening for connections.
 ///
 /// All methods must be called from a host within a Turmoil simulation.
@@ -30,7 +28,7 @@ impl TcpListener {
         let (addr, notify) = World::current(|world| {
             let addr = match world.lookup(addr) {
                 SocketAddr::V4(v4) => {
-                    if v4.ip() != &ANY {
+                    if v4.ip() != &Ipv4Addr::UNSPECIFIED {
                         panic!("{} is not supported", v4)
                     }
                     SocketAddr::V4(v4)

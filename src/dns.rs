@@ -1,5 +1,5 @@
 use indexmap::IndexMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 pub struct Dns {
     next: u16,
@@ -48,6 +48,12 @@ impl<'a> ToSocketAddr for &'a str {
 
             (std::net::Ipv4Addr::new(127, 0, a, b), 3000).into()
         })
+    }
+}
+
+impl ToSocketAddr for (IpAddr, u16) {
+    fn to_socket_addr(&self, _: &mut Dns) -> SocketAddr {
+        SocketAddr::new(self.0, self.1)
     }
 }
 

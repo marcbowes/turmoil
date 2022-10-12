@@ -1,6 +1,6 @@
 use crate::envelope::{self, Envelope};
 use crate::message::{self, downcast};
-use crate::net::{Segment, Syn, TcpStream};
+use crate::net::{Segment, SocketPair, Syn, TcpStream};
 use crate::top::Pair;
 use crate::{version, Message};
 
@@ -34,6 +34,9 @@ pub(crate) struct Host {
     /// Tcp interface for the host.
     pub(crate) tcp: Tcp,
 
+    /// Ports 1024 - 65535 for client connections.
+    next_ephemeral_port: u16,
+
     /// Current instant at the host.
     pub(crate) now: Instant,
 
@@ -51,6 +54,7 @@ impl Host {
             inbox: IndexMap::new(),
             notify,
             tcp: Tcp::new(),
+            next_ephemeral_port: 1024,
             now,
             epoch: now,
             version: 0,
@@ -82,25 +86,32 @@ impl Host {
         }
     }
 
+    // We don't recycle yet... should be sufficient for now.
+    pub(crate) fn assign_ephemeral_port(&mut self) -> u16 {
+        assert_ne!(65535, self.next_ephemeral_port, "ephemeral ports exhausted");
+        if self.next_ephemeral_port == self.addr.port() {
+            self.next_ephemeral_port += 1;
+        }
+
+        let ret = self.next_ephemeral_port;
+        self.next_ephemeral_port += 1;
+        ret
+    }
+
     pub(crate) fn receive_from_network(&mut self, envelope: Envelope) {
-        self.inbox
-            .entry(envelope.src.host)
-            .or_default()
-            .push_back(envelope);
+        // Deliver to the appropriate inbox and wake up the receiver
+        let notify = if envelope.message.as_ref().type_id() == TypeId::of::<Segment>() {
+            self.tcp.deliver(envelope)
+        } else {
+            self.inbox
+                .entry(envelope.src.host)
+                .or_default()
+                .push_back(envelope);
 
-        // Establised connections wake up the stream.
-        // let notify = if message.type_id() == TypeId::of::<StreamEnvelope>() {
-        //     let stream = downcast::<StreamEnvelope>(message);
-        //     let inbox = self
-        //         .connections
-        //         .get_mut(&stream.pair)
-        //         .expect("no connection");
-        //     inbox.notify
-        // } else {
-        //     self.notify
-        // };
+            &self.notify
+        };
 
-        self.notify.notify_one();
+        notify.notify_one();
     }
 
     // FIXME: since multiple messages could arrive at the same instant, this
@@ -138,28 +149,6 @@ impl Host {
         }
     }
 
-    // pub(crate) fn recv_on(&mut self, pair: SocketPair) -> Option<Segment> {
-    //     let now = Instant::now();
-
-    //     let deque = self
-    //         .connections
-    //         .get_mut(&pair)
-    //         .map(|i| &mut i.deque)
-    //         .expect("no connection");
-
-    //     match deque.front() {
-    //         Some(StreamEnvelope {
-    //             instructions: DeliveryInstructions::DeliverAt(time),
-    //             ..
-    //         }) if *time <= now => {
-    //             let ret = deque.pop_front().map(|e| e.segment);
-    //             self.bump_version();
-    //             ret
-    //         }
-    //         _ => None,
-    //     }
-    // }
-
     pub(crate) fn tick(&mut self, now: Instant) {
         self.now = now;
     }
@@ -169,10 +158,15 @@ impl Host {
 /// (TCP).
 pub(crate) struct Tcp {
     /// Bound server sockets
-    binds: IndexMap<SocketAddr, Inbox<Envelope>>,
+    binds: IndexMap<u16, Inbox<PendingAccept>>,
 
-    /// Active connections, keyed by (bind, remote)
-    connections: IndexMap<Pair, Inbox<Segment>>,
+    /// Active connections, keyed by (local, remote)
+    connections: IndexMap<SocketPair, Inbox<Segment>>,
+}
+
+struct PendingAccept {
+    src: SocketAddr,
+    syn: Syn,
 }
 
 /// A simple unbounded channel.
@@ -195,7 +189,7 @@ impl Tcp {
     pub(crate) fn bind(&mut self, addr: SocketAddr) -> io::Result<Rc<Notify>> {
         use indexmap::map::Entry::Vacant;
 
-        let notify = match self.binds.entry(addr) {
+        let notify = match self.binds.entry(addr.port()) {
             Vacant(e) => e
                 .insert(Inbox {
                     deque: VecDeque::new(),
@@ -209,39 +203,57 @@ impl Tcp {
         Ok(notify)
     }
 
-    pub(crate) fn connect(&mut self) {}
-
     pub(crate) fn accept(&mut self, addr: SocketAddr) -> Option<(TcpStream, SocketAddr)> {
-        if let Some(Envelope { src, message }) = self.binds[&addr].deque.pop_front() {
-            let seg = message::downcast::<Segment>(message);
-
-            let syn = match seg {
-                Segment::Syn(syn) => syn,
-                _ => panic!("invalid protocol {:?}", seg),
-            };
-
+        if let Some(PendingAccept { src, syn }) = self.binds[&addr.port()].deque.pop_front() {
             // Perform the SYN-ACK, returning early if the peer has hung up to
             // avoid mutations.
             syn.notify.send(()).ok()?;
 
-            let pair = Pair(addr, src.host);
-            let inbox = Inbox {
-                deque: VecDeque::new(),
-                notify: Rc::new(Notify::new()),
-            };
-            let notify = inbox.notify.clone();
+            let pair = SocketPair(addr, src);
+            self.new_stream(pair);
+            let notify = self.finish_connect(pair);
 
-            assert!(
-                self.connections.insert(pair, inbox).is_none(),
-                "pair is already connect {:?}",
-                pair
-            );
-
-            return Some((TcpStream::new(pair, notify), src.host));
+            return Some((TcpStream::new(pair, notify), src));
         }
 
         None
     }
 
-    pub(crate) fn unbind(&mut self, addr: SocketAddr) {}
+    pub(crate) fn new_stream(&mut self, pair: SocketPair) {
+        let inbox = Inbox {
+            deque: VecDeque::new(),
+            notify: Rc::new(Notify::new()),
+        };
+
+        assert!(
+            self.connections.insert(pair, inbox).is_none(),
+            "pair is already connected {:?}",
+            pair
+        );
+    }
+
+    pub(crate) fn finish_connect(&mut self, pair: SocketPair) -> Rc<Notify> {
+        self.connections[&pair].notify.clone()
+    }
+
+    pub(crate) fn deliver(&mut self, envelope: Envelope) -> &Notify {
+        let src = envelope.src.host;
+
+        match message::downcast(envelope.message) {
+            Segment::Syn(syn) => {
+                assert!(
+                    !self
+                        .connections
+                        .contains_key(&SocketPair::new(syn.dst, envelope.src.host)),
+                    "already connected!"
+                );
+
+                let binds = &mut self.binds[&syn.dst.port()];
+                binds.deque.push_back(PendingAccept { src, syn });
+
+                &binds.notify
+            }
+            _ => todo!("implement data, fin and rst"),
+        }
+    }
 }

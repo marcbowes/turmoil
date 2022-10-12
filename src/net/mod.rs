@@ -3,7 +3,9 @@
 //! They mirror [tokio::net](https://docs.rs/tokio/latest/tokio/net/) to provide
 //! a high fidelity implementation.
 
-use crate::{version::Dot, Message};
+use std::net::SocketAddr;
+
+use crate::Message;
 
 use bytes::Bytes;
 use tokio::sync::oneshot;
@@ -16,6 +18,17 @@ pub use stream::TcpStream;
 
 mod udp;
 pub use udp::{recv, recv_from, send};
+
+/// (Local, Remote)
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub(crate) struct SocketPair(pub(crate) SocketAddr, pub(crate) SocketAddr);
+
+impl SocketPair {
+    pub(crate) fn new(local: SocketAddr, remote: SocketAddr) -> Self {
+        assert_ne!(local, remote);
+        Self(local, remote)
+    }
+}
 
 /// TCP message types.
 ///
@@ -34,6 +47,10 @@ pub(crate) enum Segment {
 
 #[derive(Debug)]
 pub(crate) struct Syn {
+    /// FIXME: Links only deal in Ips, so we need to smuggle the server socket
+    /// through to route correctly once the host receives the message.
+    pub(crate) dst: SocketAddr,
+
     /// Notify the peer that the connection has been accepted.
     ///
     /// To connect, we only send one message (the SYN) and the rest (SYN-ACK and
