@@ -4,11 +4,9 @@
 //! a high fidelity implementation.
 
 use std::net::SocketAddr;
+use tokio::sync::oneshot;
 
 use crate::Message;
-
-use bytes::Bytes;
-use tokio::sync::oneshot;
 
 mod listener;
 pub use listener::TcpListener;
@@ -38,11 +36,11 @@ impl SocketPair {
 /// just enough control over delivery, without getting too complicated.
 #[derive(Debug)]
 pub(crate) enum Segment {
-    /// Message used to initiate a new connection with a host.
+    /// Used to initiate a new connection.
     Syn(Syn),
 
-    ///
-    Data(Bytes),
+    /// Data on an existing connection.
+    Data(StreamData),
 }
 
 #[derive(Debug)]
@@ -58,6 +56,12 @@ pub(crate) struct Syn {
     /// connects, such as added delay, which sufficiently simulates the 3-step
     /// handshake.
     pub(crate) notify: oneshot::Sender<()>,
+}
+
+#[derive(Debug)]
+pub(crate) struct StreamData {
+    pub(crate) pair: SocketPair,
+    pub(crate) message: Box<dyn Message>,
 }
 
 impl Message for Segment {

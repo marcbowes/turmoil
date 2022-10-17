@@ -9,7 +9,7 @@ use tokio_util::sync::ReusableBoxFuture;
 
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{oneshot, Notify},
+    sync::{oneshot, Notify, Semaphore},
 };
 
 use crate::{top::Pair, world::World, ToSocketAddr};
@@ -21,13 +21,17 @@ use super::{Segment, SocketPair, Syn};
 /// All methods must be called from a host within a Turmoil simulation.
 pub struct TcpStream {
     pair: SocketPair,
-    notify: Rc<Notify>,
-    // read_fut: Option<ReusableBoxFuture<'static, ()>>,
+    notify: Rc<Semaphore>,
+    read_fut: Option<ReusableBoxFuture<'static, ()>>,
 }
 
 impl TcpStream {
-    pub(crate) fn new(pair: SocketPair, notify: Rc<Notify>) -> Self {
-        Self { pair, notify }
+    pub(crate) fn new(pair: SocketPair, notify: Rc<Semaphore>) -> Self {
+        Self {
+            pair,
+            notify,
+            read_fut: None,
+        }
     }
 
     /// Opens a connection to a remote host.
@@ -54,68 +58,68 @@ impl TcpStream {
         })
     }
 
-    //     fn poll_read_priv(
-    //         &mut self,
-    //         cx: &mut Context<'_>,
-    //         buf: &mut ReadBuf<'_>,
-    //     ) -> Poll<io::Result<()>> {
-    //         let read_fut = match self.read_fut.as_mut() {
-    //             Some(fut) => fut,
-    //             None => {
-    //                 // fast path if we can recv immediately
-    //                 let maybe = Self::recv(self.pair, buf);
-    //                 if let Some(res) = maybe {
-    //                     return Poll::Ready(res);
-    //                 }
+    fn poll_read_priv(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let read_fut = match self.read_fut.as_mut() {
+            Some(fut) => fut,
+            None => {
+                // fast path if we can recv immediately
+                let maybe = Self::recv(self.pair, buf);
+                if let Some(res) = maybe {
+                    return Poll::Ready(res);
+                }
 
-    //                 let notify = Rc::clone(&self.notify);
-    //                 self.read_fut
-    //                     .get_or_insert(ReusableBoxFuture::new(
-    //                         async move { notify.notified().await },
-    //                     ))
-    //             }
-    //         };
+                let notify = Rc::clone(&self.notify);
+                self.read_fut
+                    .get_or_insert(ReusableBoxFuture::new(
+                        async move { notify.notified().await },
+                    ))
+            }
+        };
 
-    //         let _ = ready!(read_fut.poll(cx));
+        let _ = ready!(read_fut.poll(cx));
 
-    //         // Loop until we recv a segment from the host or the read future is
-    //         // pending. This is necessary as we might be notified, but the segment
-    //         // is still "on the network" and we need to continue polling.
-    //         loop {
-    //             let notify = Rc::clone(&self.notify);
-    //             read_fut.set(async move { notify.notified().await });
+        // Loop until we recv a segment from the host or the read future is
+        // pending. This is necessary as we might be notified, but the segment
+        // is still "on the network" and we need to continue polling.
+        loop {
+            let notify = Rc::clone(&self.notify);
+            read_fut.set(async move { notify.notified().await });
 
-    //             match Self::recv(self.pair, buf) {
-    //                 Some(res) => return Poll::Ready(res),
-    //                 _ => ready!(read_fut.poll(cx)),
-    //             }
-    //         }
-    //     }
+            match Self::recv(self.pair, buf) {
+                Some(res) => return Poll::Ready(res),
+                _ => ready!(read_fut.poll(cx)),
+            }
+        }
+    }
 
-    //     fn recv(pair: SocketPair, buf: &mut ReadBuf<'_>) -> Option<io::Result<()>> {
-    //         match World::current(|world| world.recv_on(pair)) {
-    //             Some(seg) => match seg {
-    //                 Segment::Data(bytes) => {
-    //                     buf.put_slice(bytes.as_ref());
-    //                     return Some(Ok(()));
-    //                 }
-    //             },
-    //             _ => None,
-    //         }
-    //     }
+    fn recv(pair: SocketPair, buf: &mut ReadBuf<'_>) -> Option<io::Result<()>> {
+        match World::current(|world| world.recv_on(pair)) {
+            Some(seg) => match seg {
+                Segment::Data(bytes) => {
+                    buf.put_slice(bytes.as_ref());
+                    return Some(Ok(()));
+                }
+            },
+            _ => None,
+        }
+    }
 
-    //     fn poll_write_priv(&self, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
-    //         World::current(|world| {
-    //             let bytes = Bytes::copy_from_slice(buf);
-    //             let encap = StreamEnvelope {
-    //                 pair: self.pair,
-    //                 segment: Segment::Data(bytes),
-    //             };
-    //             world.send_message(self.pair.peer.host, Box::new(encap))
-    //         });
+    fn poll_write_priv(&self, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+        World::current(|world| {
+            let bytes = Bytes::copy_from_slice(buf);
+            let encap = StreamEnvelope {
+                pair: self.pair,
+                segment: Segment::Data(bytes),
+            };
+            world.send_message(self.pair.peer.host, Box::new(encap))
+        });
 
-    //         Poll::Ready(Ok(buf.len()))
-    //     }
+        Poll::Ready(Ok(buf.len()))
+    }
 }
 
 // impl AsyncRead for TcpStream {
